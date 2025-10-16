@@ -11,6 +11,23 @@ cookie=/tmp/unifi_cookie
 
 curl_cmd="curl --tlsv1 --silent --cookie ${cookie} --cookie-jar ${cookie} --insecure "
 
+# Функция для логирования в API библиотеке
+api_log() {
+    local level="$1"
+    shift
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [API-$level] $*" >&2
+}
+
+api_log_info() {
+    api_log "INFO" "$@"
+}
+
+api_log_debug() {
+    if [ "$DEBUG" == "true" ]; then
+        api_log "DEBUG" "$@"
+    fi
+}
+
 named_args_to_payload() {
     payload=""
     for a in "$@" ; do
@@ -38,12 +55,18 @@ unifi_requires() {
 
 unifi_login() {
     # authenticate against unifi controller
-    ${curl_cmd} --data "{'username':'$username', 'password':'$password'}" $baseurl/api/login
+    api_log_info "Начало авторизации в UniFi Controller: $baseurl"
+    api_log_debug "Пользователь: $username, Сайт: $site"
+    local result=$(${curl_cmd} --data "{'username':'$username', 'password':'$password'}" $baseurl/api/login)
+    api_log_info "Авторизация завершена"
+    echo "$result"
 }
 
 unifi_logout() {
     # logout
+    api_log_info "Выход из UniFi Controller"
     ${curl_cmd} $baseurl/logout
+    api_log_info "Выход завершен"
 }
 
 unifi_api() {
@@ -57,6 +80,8 @@ unifi_api() {
     [ "${uri:0:1}" != "/" ] && uri="/$uri"
     json="$@"
     [ "$json" = "" ] && json="{}"
+    api_log_debug "Вызов API: $baseurl/api/s/$site$uri"
+    api_log_debug "JSON данные: $json"
     ${curl_cmd} --data "$json" $baseurl/api/s/$site$uri
 }
 
@@ -71,6 +96,9 @@ unifi_authorize_guest() {
     mac=$1
     minutes=$2
     other_payload=`named_args_to_payload "$@"`
+    
+    api_log_info "Авторизация гостя: MAC=$mac, Минуты=$minutes"
+    api_log_debug "Дополнительные параметры: $other_payload"
 
     ${curl_cmd} --data "json={'cmd':'authorize-guest', 'mac':'${mac}', 'minutes':${minutes}${other_payload}}" $baseurl/api/s/$site/cmd/stamgr
 }
@@ -121,11 +149,18 @@ unifi_backup() {
         output=$1
     fi
 
+    api_log_info "Запуск резервного копирования контроллера"
+    api_log_info "Файл резервной копии: $output"
+    
     # ask controller to do a backup, response contains the path to the backup file
     path=`$curl_cmd --data "json={'cmd':'backup'}" $baseurl/api/s/$site/cmd/backup | sed -n 's/.*\(\/dl.*unf\).*/\1/p'`
+    
+    api_log_debug "Путь к резервной копии: $path"
 
     # download the backup to the destinated output file
     $curl_cmd $baseurl$path -o $output
+    
+    api_log_info "Резервное копирование завершено"
 }
 
 # cmd/hotspot
@@ -139,9 +174,16 @@ unifi_create_voucher() {
     minutes=$1
     n=$2
     other_payload=`named_args_to_payload "$@"`
+    
+    api_log_info "Создание ваучеров: количество=$n, срок действия=$minutes минут"
+    api_log_debug "Дополнительные параметры: $other_payload"
+    
     token=`${curl_cmd} --data "json={'cmd':'create-voucher','expire':${minutes},'n':$n ${other_payload}}" $baseurl/api/s/$site/cmd/hotspot \
         | sed -e 's/.*"create_time"\s*:\s*\([0-9]\+\).*/\1/'`
     echo "token=$token"
+    
+    api_log_info "Ваучеры созданы, токен: $token"
+    
     if [ "$token" != "" ] ; then
         ${curl_cmd} --data "json={'create_time':${token}}" $baseurl/api/s/$site/stat/voucher
     fi
@@ -173,6 +215,7 @@ unifi_delete_voucher() {
 
 # stat/sta
 unifi_list_sta() {
+    api_log_info "Получение списка подключенных станций (клиентов)"
     ${curl_cmd} --data "json={}" $baseurl/api/s/$site/stat/sta
 }
 
@@ -186,7 +229,12 @@ unifi_upgrade_external() {
     mac=$1
     firmware_url=$2
 
+    api_log_info "Обновление устройства с внешней прошивкой: MAC=$mac"
+    api_log_debug "URL прошивки: $firmware_url"
+
     ${curl_cmd} --data "json={'url':'${firmware_url}', 'mac':'${mac}'}" $baseurl/api/s/$site/cmd/devmgr/upgrade-external
+    
+    api_log_info "Команда обновления отправлена"
 }
 
 

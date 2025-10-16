@@ -1,6 +1,40 @@
 #! /bin/bash
 
 VERSION="0.1.3_alpha"
+
+# Проверяем DEBUG режим заранее
+DEBUG=false
+for arg in "$@"; do
+    if [ "$arg" == "-d" ] || [ "$arg" == "--debug" ]; then
+        DEBUG=true
+        break
+    fi
+done
+
+# Функция для логирования
+log() {
+    local level="$1"
+    shift
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $*" >&2
+}
+
+log_info() {
+    log "INFO" "$@"
+}
+
+log_error() {
+    log "ERROR" "$@"
+}
+
+log_debug() {
+    if [ "$DEBUG" == "true" ]; then
+        log "DEBUG" "$@"
+    fi
+}
+
+log_info "Запуск UniFi CLI версии $VERSION"
+log_debug "Аргументы командной строки: $*"
+
 OPTIONS=$(getopt  -o Rdhv \
                   --long show:,list::,reboot::,upgrade::,version \
                   -n "$0" -- "$@")
@@ -27,27 +61,36 @@ usage () {
 SCRIPT=$(realpath $0)
 DIR=$(dirname $SCRIPT)
 
+log_debug "Путь к скрипту: $SCRIPT"
+log_debug "Директория скрипта: $DIR"
+
 ## Config
 CONF="$DIR/unifi.conf"
 if [ -f "$CONF" ]; then
+  log_info "Загрузка конфигурационного файла: $CONF"
   . $CONF
 elif [ -f "/etc/unifi/unifi.conf" ]; then
   CONF="/etc/unifi/unifi.conf"
   DIR="/etc/unifi"
+  log_info "Загрузка конфигурационного файла: $CONF"
   . $CONF
 else
+  log_error "Конфигурационный файл не найден"
   echo "[ERROR] Config file not found"
   usage
   exit 1
 fi
 
 ## Include the API libraries
+log_info "Загрузка библиотеки API: unifi_sh_api"
 . $DIR/unifi_sh_api
+log_info "Загрузка библиотеки API: unifi_sh_api_nonofficial"
 . $DIR/unifi_sh_api_nonofficial
 
 # No args passed?
 if [ "$#" -lt 1 ]
 then
+  log_error "Не указаны аргументы командной строки"
   echo "$0: missing args"
   usage
   exit 1
@@ -57,6 +100,7 @@ fi
 arg=$1
 if [ ${arg:0:1} != "-" ]
 then
+  log_error "Неверная команда: '$1'"
   echo "$0: invalid command -- '$1'"
   usage
   exit 1
@@ -73,51 +117,77 @@ show () {
 }
 
 list () {
+  log_info "Выполнение команды: list"
+  log_debug "Параметры list: $*"
+  
+  log_info "Попытка авторизации в UniFi Controller"
   unifi_login
 
   if [ $# -lt 1 ] || [ "$1" == "all" ] ; then
+    log_info "Получение списка всех устройств"
     unifi_list_dev | python -m json.tool
   else
+    log_info "Получение списка точек доступа"
     unifi_list_ap | jq -r '.data[] | select(.type=="uap") | [.name, .mac]'
   fi
 
+  log_info "Выход из UniFi Controller"
   unifi_logout
+  log_info "Команда list завершена успешно"
 }
 
 reboot () {
+  log_info "Выполнение команды: reboot"
+  log_debug "Параметры reboot: $*"
+  
+  log_info "Попытка авторизации в UniFi Controller"
   unifi_login > /dev/null ||
-    { echo "[ERROR] Login error"; exit 1; }
+    { log_error "Ошибка авторизации"; echo "[ERROR] Login error"; exit 1; }
 
   if [ $# -lt 1 ]; then
     if [ "$ROLLING" == "true" ]; then
+      log_info "Запуск постепенной перезагрузки всех точек доступа"
       unifi_reboot_all_ap
     else
+      log_error "Отсутствует опция -R для постепенной перезагрузки"
       echo "Missing option -R. Aborting rolling reboot"
     fi
   else
+    log_info "Перезагрузка устройства с MAC: $1"
     unifi_reboot_dev $1
   fi
 
+  log_info "Выход из UniFi Controller"
   unifi_logout > /dev/null ||
-    { echo "[ERROR] Logout error"; exit 1; }
+    { log_error "Ошибка выхода из системы"; echo "[ERROR] Logout error"; exit 1; }
+  log_info "Команда reboot завершена успешно"
 }
 
 upgrade () {
+  log_info "Выполнение команды: upgrade"
+  log_debug "Параметры upgrade: $*"
+  
+  log_info "Попытка авторизации в UniFi Controller"
   unifi_login > /dev/null ||
-    { echo "[ERROR] Login error"; exit 1; }
+    { log_error "Ошибка авторизации"; echo "[ERROR] Login error"; exit 1; }
 
   if [ $# -lt 1 ]; then
     if [ "$ROLLING" == "true" ]; then
+      log_info "Запуск постепенного обновления всех точек доступа"
       unifi_ap_rolling_upgrade
     else
+      log_error "Отсутствует опция -R для постепенного обновления"
       echo "Missing option -R. Aborting rolling upgrade"
     fi
   else
+    log_info "Обновление устройства с MAC: $1"
     unifi_upgrade_dev $1
   fi
 
+  log_info "Выход из UniFi Controller"
   unifi_logout > /dev/null ||
-    { echo "[ERROR] Logout error"; exit 1; }
+    { log_error "Ошибка выхода из системы"; echo "[ERROR] Logout error"; exit 1; }
+  log_info "Команда upgrade завершена успешно"
 }
 
 eval set -- "$OPTIONS"
@@ -128,8 +198,10 @@ while true; do
   case "$1" in
     --show )
       # show a device
+      log_info "Обработка команды: --show"
       show $2; shift 2 ;;
     --list )
+      log_info "Обработка команды: --list"
       case "$2" in
         # list without arg
         "") list; shift 2 ;;
@@ -137,6 +209,7 @@ while true; do
         *)  list $2; shift 2 ;;
       esac ;;
     --reboot )
+      log_info "Обработка команды: --reboot"
       case "$2" in
         # reboot a device
         "") reboot; shift 2 ;;
@@ -144,16 +217,29 @@ while true; do
         *)  reboot $2; shift 2 ;;
       esac ;;
     --upgrade )
+      log_info "Обработка команды: --upgrade"
       case "$2" in
         "") upgrade; shift 2 ;;
         # upgrade a custom device
         *) upgrade $2; shift 2 ;;
       esac ;;
-    -R )              ROLLING=true; shift ;;
-    -d | --debug )    DEBUG=true; shift ;;
-    -h | --help )     usage; shift ;;
-    -v | --version )  version; shift ;;
+    -R )
+      log_info "Включен режим постепенного выполнения (rolling)"
+      ROLLING=true; shift ;;
+    -d | --debug )
+      log_info "Включен режим отладки (DEBUG)"
+      DEBUG=true; shift ;;
+    -h | --help )
+      log_info "Отображение справки"
+      usage; shift ;;
+    -v | --version )
+      log_info "Отображение версии"
+      version; shift ;;
     -- ) shift; break ;;
-    * ) echo "Unknown error"; exit 1 ;;
+    * )
+      log_error "Неизвестная ошибка при обработке параметров"
+      echo "Unknown error"; exit 1 ;;
   esac
 done
+
+log_info "Скрипт UniFi CLI завершил работу"

@@ -4,11 +4,13 @@
 
 # list devices
 unifi_list_dev() {
+    api_log_info "Получение списка всех устройств"
     ${curl_cmd} --data "json={}" $baseurl/api/s/$site/stat/device
 }
 
 # list ap devices
 unifi_list_ap() {
+    api_log_info "Получение списка точек доступа"
     ${curl_cmd} --data "json={'type':'uap'}" $baseurl/api/s/$site/stat/device
 }
 
@@ -20,7 +22,9 @@ unifi_reboot_dev() {
 
     mac=$1
 
+    api_log_info "Отправка команды перезагрузки устройству: MAC=$mac"
     ${curl_cmd} --data "json={'cmd':'restart', 'mac':'${mac}'}" $baseurl/api/s/$site/cmd/devmgr
+    api_log_info "Команда перезагрузки отправлена"
 }
 
 # reboot all ap devices
@@ -32,15 +36,22 @@ unifi_reboot_all_ap() {
         echo "Usage: $0"
     fi
     
+    api_log_info "Начало постепенной перезагрузки всех точек доступа"
+    api_log_info "Интервал между перезагрузками: $wait секунд"
+    
     # Get all APs on the site
     ${curl_cmd} --data "json={'type':'uap'}" $baseurl/api/s/$site/stat/device | jq -r '.data[] | .mac' | while read mac
     do
         #mac=${mac%\"}
         #mac=${mac#\"}
+        api_log_info "Перезагрузка точки доступа: $mac"
         echo "Rebooting AP: $mac"
         unifi_reboot_dev $mac
+        api_log_info "Ожидание $wait секунд перед следующей перезагрузкой"
         sleep $wait
     done
+    
+    api_log_info "Постепенная перезагрузка завершена"
 }
 
 
@@ -53,15 +64,21 @@ unifi_upgrade_dev() {
     
     mac=$1
 
+    api_log_info "Отправка команды обновления устройству: MAC=$mac"
     ${curl_cmd} --data "json={'mac':'${mac}'}" $baseurl/api/s/$site/cmd/devmgr/upgrade
+    api_log_info "Команда обновления отправлена"
 }
 
 # upgrade all aps (rolling upgrade)
 unifi_ap_rolling_upgrade() {
+    api_log_info "Запуск постепенного обновления всех точек доступа (rolling upgrade)"
     ${curl_cmd} --data "json={'cmd':'set-rollupgrade'}" $baseurl/api/s/$site/cmd/devmgr/
+    api_log_info "Постепенное обновление запущено"
 }
 
 # abort rolling upgrade
 unifi_ap_rolling_upgrade_cancel() {
+    api_log_info "Отмена постепенного обновления"
     ${curl_cmd} --data "json={'cmd':'unset-rollupgrade'}" $baseurl/api/s/$site/cmd/devmgr/
+    api_log_info "Постепенное обновление отменено"
 }
