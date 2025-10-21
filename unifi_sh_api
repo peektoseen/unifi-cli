@@ -9,7 +9,15 @@
 
 cookie=/tmp/unifi_cookie
 
-curl_cmd="curl --tlsv1 --silent --cookie ${cookie} --cookie-jar ${cookie} --insecure "
+# Используем -sS (--silent --show-error) вместо --silent для показа ошибок
+curl_cmd="curl --tlsv1 -sS --cookie ${cookie} --cookie-jar ${cookie} --insecure "
+
+# Функция-обёртка для логирования прямых вызовов curl
+curl_direct() {
+    local full_cmd="${curl_cmd} $@"
+    api_log_info "Команда CURL (прямой вызов): $full_cmd"
+    ${curl_cmd} "$@"
+}
 
 # Функция для логирования в API библиотеке
 api_log() {
@@ -36,15 +44,27 @@ api_log_error() {
 curl_with_log() {
     local url="$1"
     shift
-    local extra_args="$@"
     
     api_log_debug "Выполнение запроса: $url"
-    api_log_debug "Параметры curl: $extra_args"
+    api_log_debug "Параметры curl: $*"
     
-    # Выполняем запрос с получением HTTP кода
-    local response=$(${curl_cmd} -w "\nHTTP_CODE:%{http_code}" $extra_args "$url" 2>&1)
+    # Выводим полную команду curl
+    local full_cmd="${curl_cmd} -H \"Content-Type: application/json\" -w \"\nHTTP_CODE:%{http_code}\" $* \"$url\""
+    api_log_info "Команда CURL: $full_cmd"
+    
+    # Выполняем запрос с получением HTTP кода (stderr перенаправляется в stdout)
+    # Используем "$@" для правильной передачи аргументов с сохранением кавычек
+    # -H "Content-Type: application/json" - обязательный заголовок для UniFi API
+    local response=$(${curl_cmd} -H "Content-Type: application/json" -w "\nHTTP_CODE:%{http_code}" "$@" "$url" 2>&1)
+    
+    # Проверяем наличие ошибок curl (они начинаются с "curl: ")
+    if echo "$response" | grep -q "^curl: "; then
+        local curl_error=$(echo "$response" | grep "^curl: ")
+        api_log_error "Ошибка CURL: $curl_error"
+    fi
+    
     local http_code=$(echo "$response" | grep "HTTP_CODE:" | cut -d: -f2)
-    local body=$(echo "$response" | sed '/HTTP_CODE:/d')
+    local body=$(echo "$response" | sed '/HTTP_CODE:/d' | grep -v "^curl: ")
     
     api_log_debug "HTTP код ответа: $http_code"
     
@@ -99,7 +119,11 @@ named_args_to_payload() {
         if [ "${a##*=*}" = "" ] ; then
             k=`echo $a | cut -d = -f 1`
             v=`echo $a | cut -d = -f 2`
-            payload="${payload}, '$k':'$v'"
+            # Добавляем запятую и пробел перед параметром, а не в начале
+            if [ -n "$payload" ]; then
+                payload="${payload}, "
+            fi
+            payload="${payload}\"$k\":\"$v\""
         fi
     done
     echo ${payload}
@@ -122,7 +146,43 @@ unifi_login() {
     # authenticate against unifi controller
     api_log_info "Начало авторизации в UniFi Controller: $baseurl"
     api_log_debug "Пользователь: $username, Сайт: $site"
-    local result=$(curl_with_log "$baseurl/api/login" --data "{'username':'$username', 'password':'$password'}")
+    api_log_info "Файл cookie: $cookie"
+    
+    # Удаляем старый cookie файл перед авторизацией
+    if [ -f "$cookie" ]; then
+        api_log_debug "Удаление старого cookie файла перед авторизацией"
+        rm -f "$cookie"
+    fi
+    
+    local result=$(curl_with_log "$baseurl/api/login" --data '{"username":"'"$username"'", "password":"'"$password"'"}')
+    
+    # Проверяем cookie ПОСЛЕ авторизации
+    api_log_info "--- Проверка результата авторизации ---"
+    if [ -f "$cookie" ]; then
+        if [ -s "$cookie" ]; then
+            api_log_info "✓ Cookie файл создан и содержит данные"
+            api_log_info "Содержимое cookie ПОСЛЕ авторизации:"
+            while IFS= read -r line; do
+                # Пропускаем комментарии
+                if [[ "$line" != \#* ]]; then
+                    api_log_info "  Cookie: $line"
+                fi
+            done < "$cookie"
+            
+            # Проверяем наличие unifises cookie
+            if grep -q "unifises" "$cookie"; then
+                api_log_info "✓ Найден unifises cookie (авторизация успешна!)"
+            else
+                api_log_error "✗ unifises cookie НЕ найден (авторизация неудачна)"
+            fi
+        else
+            api_log_error "✗ Cookie файл существует, но ПУСТ (авторизация неудачна)"
+        fi
+    else
+        api_log_error "✗ Cookie файл НЕ был создан (серьезная ошибка)"
+    fi
+    api_log_info "--- Конец проверки ---"
+    
     api_log_info "Авторизация завершена"
     echo "$result"
 }
@@ -164,8 +224,13 @@ unifi_authorize_guest() {
     
     api_log_info "Авторизация гостя: MAC=$mac, Минуты=$minutes"
     api_log_debug "Дополнительные параметры: $other_payload"
+    
+    # Добавляем запятую перед other_payload, если он не пуст
+    if [ -n "$other_payload" ]; then
+        other_payload=", ${other_payload}"
+    fi
 
-    ${curl_cmd} --data "json={'cmd':'authorize-guest', 'mac':'${mac}', 'minutes':${minutes}${other_payload}}" $baseurl/api/s/$site/cmd/stamgr
+    ${curl_cmd} --data 'json={"cmd":"authorize-guest", "mac":"'"${mac}"'", "minutes":'"${minutes}${other_payload}"'}' $baseurl/api/s/$site/cmd/stamgr
 }
 
 # cmd/stamgr
@@ -178,7 +243,7 @@ unifi_unauthorize_guest() {
 
     mac=$1
 
-    ${curl_cmd} --data "json={'cmd':'unauthorize-guest', 'mac':'${mac}'}" $baseurl/api/s/$site/cmd/stamgr
+    ${curl_cmd} --data 'json={"cmd":"unauthorize-guest", "mac":"'"${mac}"'"}' $baseurl/api/s/$site/cmd/stamgr
 }
 
 # cmd/stamgr
@@ -191,7 +256,7 @@ unifi_reconnect_sta() {
 
     mac=$1
 
-    ${curl_cmd} --data "json={'cmd':'kick-sta', 'mac':'${mac}'}" $baseurl/api/s/$site/cmd/stamgr
+    ${curl_cmd} --data 'json={"cmd":"kick-sta", "mac":"'"${mac}"'"}' $baseurl/api/s/$site/cmd/stamgr
 }
 
 # cmd/stamgr
@@ -204,7 +269,7 @@ unifi_block_sta() {
 
     mac=$1
 
-    ${curl_cmd} --data "json={'cmd':'block-sta', 'mac':'${mac}'}" $baseurl/api/s/$site/cmd/stamgr
+    ${curl_cmd} --data 'json={"cmd":"block-sta", "mac":"'"${mac}"'"}' $baseurl/api/s/$site/cmd/stamgr
 }
 
 unifi_backup() {
@@ -218,7 +283,7 @@ unifi_backup() {
     api_log_info "Файл резервной копии: $output"
     
     # ask controller to do a backup, response contains the path to the backup file
-    path=`$curl_cmd --data "json={'cmd':'backup'}" $baseurl/api/s/$site/cmd/backup | sed -n 's/.*\(\/dl.*unf\).*/\1/p'`
+    path=`$curl_cmd --data 'json={"cmd":"backup"}' $baseurl/api/s/$site/cmd/backup | sed -n 's/.*\(\/dl.*unf\).*/\1/p'`
     
     api_log_debug "Путь к резервной копии: $path"
 
@@ -243,14 +308,19 @@ unifi_create_voucher() {
     api_log_info "Создание ваучеров: количество=$n, срок действия=$minutes минут"
     api_log_debug "Дополнительные параметры: $other_payload"
     
-    token=`${curl_cmd} --data "json={'cmd':'create-voucher','expire':${minutes},'n':$n ${other_payload}}" $baseurl/api/s/$site/cmd/hotspot \
+    # Добавляем запятую перед other_payload, если он не пуст
+    if [ -n "$other_payload" ]; then
+        other_payload=", ${other_payload}"
+    fi
+    
+    token=`${curl_cmd} --data 'json={"cmd":"create-voucher","expire":'"${minutes}"',"n":'"$n${other_payload}"'}' $baseurl/api/s/$site/cmd/hotspot \
         | sed -e 's/.*"create_time"\s*:\s*\([0-9]\+\).*/\1/'`
     echo "token=$token"
     
     api_log_info "Ваучеры созданы, токен: $token"
     
     if [ "$token" != "" ] ; then
-        ${curl_cmd} --data "json={'create_time':${token}}" $baseurl/api/s/$site/stat/voucher
+        ${curl_cmd} --data 'json={"create_time":'"${token}"'}' $baseurl/api/s/$site/stat/voucher
     fi
 }
 
@@ -263,9 +333,9 @@ unifi_get_vouchers() {
         return
     fi
     token=$1
-    [ "$token" != "" ] && other_payload="'create_time':${token}"
-    ${curl_cmd} --data "json={${other_payload}}" $baseurl/api/s/$site/stat/voucher
-    echo ${curl_cmd} --data "json={${other_payload}}" $baseurl/api/s/$site/stat/voucher
+    [ "$token" != "" ] && other_payload='"create_time":'"${token}"
+    ${curl_cmd} --data 'json={'"${other_payload}"'}' $baseurl/api/s/$site/stat/voucher
+    echo ${curl_cmd} --data 'json={'"${other_payload}"'}' $baseurl/api/s/$site/stat/voucher
 }
 
 # delete-voucher(id)
@@ -275,7 +345,7 @@ unifi_delete_voucher() {
         return
     fi
     id=$1
-    ${curl_cmd} --data "json={'cmd':'delete-voucher','_id':'${id}'}" $baseurl/api/s/$site/cmd/hotspot
+    ${curl_cmd} --data 'json={"cmd":"delete-voucher","_id":"'"${id}"'"}' $baseurl/api/s/$site/cmd/hotspot
 }
 
 # stat/sta
@@ -297,7 +367,7 @@ unifi_upgrade_external() {
     api_log_info "Обновление устройства с внешней прошивкой: MAC=$mac"
     api_log_debug "URL прошивки: $firmware_url"
 
-    ${curl_cmd} --data "json={'url':'${firmware_url}', 'mac':'${mac}'}" $baseurl/api/s/$site/cmd/devmgr/upgrade-external
+    ${curl_cmd} --data 'json={"url":"'"${firmware_url}"'", "mac":"'"${mac}"'"}' $baseurl/api/s/$site/cmd/devmgr/upgrade-external
     
     api_log_info "Команда обновления отправлена"
 }

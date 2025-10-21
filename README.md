@@ -34,6 +34,13 @@ site=default
 ./unifi
 ```
 
+## Documentation
+
+- [Logging README](doc/README_LOGGING.md) - Быстрый старт с системой логирования 🚀
+- [Logging Documentation](doc/LOGGING.md) - Подробная документация по системе логирования
+- [Logging Summary](doc/LOGGING_SUMMARY.md) - Краткое описание системы логирования
+- [Changelog - Logging](doc/CHANGELOG_LOGGING.md) - История изменений системы логирования
+
 ## Resources
 
 I'm using the [UniFi official library](https://dl.ubnt.com/unifi/5.4.11-6cbeae59e7/unifi_sh_api)
